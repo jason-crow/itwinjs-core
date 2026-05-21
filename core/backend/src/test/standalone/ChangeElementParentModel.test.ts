@@ -22,6 +22,7 @@ describe("changeElementParent and changeElementModel", () => {
   let relatedElementCodeSpecId: Id64String;
   let modelScopedCodeSpecId: Id64String;
   let parentElementCodeSpecId: Id64String;
+  let repositoryCodeSpecId: Id64String;
   let txn: EditTxn;
 
   before(async () => {
@@ -38,6 +39,7 @@ describe("changeElementParent and changeElementModel", () => {
       relatedElementCodeSpecId = seedDb.codeSpecs.insert(editTxn, "RelatedElementCodeSpec", CodeScopeSpec.Type.RelatedElement);
       modelScopedCodeSpecId = seedDb.codeSpecs.insert(editTxn, "ModelScopedCodeSpec", CodeScopeSpec.Type.Model);
       parentElementCodeSpecId = seedDb.codeSpecs.insert(editTxn, "ParentElementCodeSpec", CodeScopeSpec.Type.ParentElement);
+      repositoryCodeSpecId = seedDb.codeSpecs.insert(editTxn, "RepositoryCodeSpec", CodeScopeSpec.Type.Repository);
       assert.isNotEmpty(modelAId, "Expected a valid PhysicalModel id for ModelA");
       assert.isNotEmpty(modelBId, "Expected a valid PhysicalModel id for ModelB");
       assert.isNotEmpty(defModelAId, "Expected a valid DefinitionModel id for DefinitionModelA");
@@ -46,6 +48,7 @@ describe("changeElementParent and changeElementModel", () => {
       assert.isNotEmpty(relatedElementCodeSpecId, "Expected a valid RelatedElement CodeSpec id");
       assert.isNotEmpty(modelScopedCodeSpecId, "Expected a valid Model CodeSpec id");
       assert.isNotEmpty(parentElementCodeSpecId, "Expected a valid ParentElement CodeSpec id");
+      assert.isNotEmpty(repositoryCodeSpecId, "Expected a valid Repository CodeSpec id");
     });
   });
 
@@ -419,6 +422,65 @@ describe("changeElementParent and changeElementModel", () => {
 
       expect(() => iModelDb.elements.changeElementModel({ id: parent, modelId: defModelAId })).to.throw("cannot move element from model of type");
     });
+
+    it("blocks subtree move when a child has a Model-scoped code", () => {
+      const parent = insertElement(modelAId);
+      insertElement(modelAId, {
+        parentId: parent,
+        codeSpec: modelScopedCodeSpecId,
+        codeScope: modelAId,
+        codeValue: "ChildModelScoped",
+      });
+      txn.end("save");
+
+      expect(() => iModelDb.elements.changeElementModel({ id: parent, modelId: modelBId })).to.throw();
+    });
+
+    it("blocks subtree move when a child has a ParentElement-scoped code", () => {
+      const parent = insertElement(modelAId);
+      insertElement(modelAId, {
+        parentId: parent,
+        codeSpec: parentElementCodeSpecId,
+        codeScope: parent,
+        codeValue: "ChildParentScoped",
+      });
+      txn.end("save");
+
+      expect(() => iModelDb.elements.changeElementModel({ id: parent, modelId: modelBId })).to.throw();
+    });
+
+    it("allows subtree move when children have RelatedElement-scoped codes", () => {
+      const scopeElem = insertElement(modelAId);
+      const parent = insertElement(modelAId);
+      insertElement(modelAId, {
+        parentId: parent,
+        codeSpec: relatedElementCodeSpecId,
+        codeScope: scopeElem,
+        codeValue: "ChildRelatedCode",
+      });
+      txn.end("save");
+
+      iModelDb.elements.changeElementModel({ id: parent, modelId: modelBId });
+
+      const movedParent = iModelDb.elements.getElementProps(parent);
+      assert.equal(movedParent.model, modelBId);
+    });
+
+    it("allows subtree move when children have Repository-scoped codes", () => {
+      const parent = insertElement(modelAId);
+      insertElement(modelAId, {
+        parentId: parent,
+        codeSpec: repositoryCodeSpecId,
+        codeScope: IModel.repositoryModelId,
+        codeValue: "ChildRepositoryScoped",
+      });
+      txn.end("save");
+
+      iModelDb.elements.changeElementModel({ id: parent, modelId: modelBId });
+
+      const movedParent = iModelDb.elements.getElementProps(parent);
+      assert.equal(movedParent.model, modelBId);
+    });
   });
 
   describe("changeElementParent (assembly)", () => {
@@ -491,6 +553,71 @@ describe("changeElementParent and changeElementModel", () => {
       txn.end("save");
 
       expect(() => iModelDb.elements.changeElementParent({ id: parent, parentId: targetParent })).to.throw("cannot move element from model of type");
+    });
+
+    it("blocks subtree reparent when a child has a Model-scoped code (cross-model)", () => {
+      const parent = insertElement(modelAId);
+      insertElement(modelAId, {
+        parentId: parent,
+        codeSpec: modelScopedCodeSpecId,
+        codeScope: modelAId,
+        codeValue: "ChildModelScopedReparent",
+      });
+      const targetParent = insertElement(modelBId);
+      txn.end("save");
+
+      expect(() => iModelDb.elements.changeElementParent({ id: parent, parentId: targetParent })).to.throw();
+    });
+
+    it("blocks subtree reparent when a child has a ParentElement-scoped code (cross-model)", () => {
+      const parent = insertElement(modelAId);
+      insertElement(modelAId, {
+        parentId: parent,
+        codeSpec: parentElementCodeSpecId,
+        codeScope: parent,
+        codeValue: "ChildParentScopedReparent",
+      });
+      const targetParent = insertElement(modelBId);
+      txn.end("save");
+
+      expect(() => iModelDb.elements.changeElementParent({ id: parent, parentId: targetParent })).to.throw();
+    });
+
+    it("allows subtree reparent when children have RelatedElement-scoped codes", () => {
+      const scopeElem = insertElement(modelAId);
+      const parent = insertElement(modelAId);
+      insertElement(modelAId, {
+        parentId: parent,
+        codeSpec: relatedElementCodeSpecId,
+        codeScope: scopeElem,
+        codeValue: "ChildRelatedCodeReparent",
+      });
+      const targetParent = insertElement(modelBId);
+      txn.end("save");
+
+      iModelDb.elements.changeElementParent({ id: parent, parentId: targetParent });
+
+      const movedParent = iModelDb.elements.getElementProps(parent);
+      assert.equal(movedParent.model, modelBId);
+      assert.equal(movedParent.parent?.id, targetParent);
+    });
+
+    it("allows subtree reparent when children have Repository-scoped codes", () => {
+      const parent = insertElement(modelAId);
+      insertElement(modelAId, {
+        parentId: parent,
+        codeSpec: repositoryCodeSpecId,
+        codeScope: IModel.repositoryModelId,
+        codeValue: "ChildRepositoryScopedReparent",
+      });
+      const targetParent = insertElement(modelBId);
+      txn.end("save");
+
+      iModelDb.elements.changeElementParent({ id: parent, parentId: targetParent });
+
+      const movedParent = iModelDb.elements.getElementProps(parent);
+      assert.equal(movedParent.model, modelBId);
+      assert.equal(movedParent.parent?.id, targetParent);
     });
   });
 });
