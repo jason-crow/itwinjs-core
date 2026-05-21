@@ -921,6 +921,18 @@ export class ChangedElementsDb implements Disposable {
 }
 
 // @beta
+export interface ChangeElementModelProps {
+    id: Id64String;
+    modelId: Id64String;
+}
+
+// @beta
+export interface ChangeElementParentProps {
+    id: Id64String;
+    parentId: Id64String;
+}
+
+// @beta
 export interface ChangeFormatArgs {
     includeNullColumns?: true;
     includeOpCode?: true;
@@ -2715,6 +2727,8 @@ export interface EditableWorkspaceDb extends WorkspaceDb {
 export class EditTxn {
     constructor(iModel: IModelDb, description: string);
     abandonChanges(): void;
+    changeElementModel(props: ChangeElementModelProps): void;
+    changeElementParent(props: ChangeElementParentProps): void;
     deleteAspect(aspectInstanceIds: Id64Arg): void;
     deleteDefinitionElements(definitionElementIds: Id64Array): Id64Set;
     deleteElement(ids: Id64Arg): void;
@@ -2735,7 +2749,6 @@ export class EditTxn {
     insertModel(props: ModelProps): Id64String;
     insertRelationship(props: RelationshipProps): Id64String;
     get isActive(): boolean;
-    moveElement(props: MoveElementProps): void;
     onClose(): void;
     saveChanges(args?: string | SaveChangesArgs): void;
     saveDefaultViewStore(arg: CloudSqlite.ContainerProps): void;
@@ -4197,6 +4210,10 @@ export namespace IModelDb {
         readonly [_instanceKeyCache]: InstanceKeyLRUCache;
         // @internal
         constructor(_iModel: IModelDb);
+        // @beta
+        changeElementModel(props: ChangeElementModelProps): void;
+        // @beta
+        changeElementParent(props: ChangeElementParentProps): void;
         createElement<T extends Element_2>(elProps: ElementProps): T;
         // @deprecated
         deleteAspect(aspectInstanceIds: Id64Arg): void;
@@ -4220,8 +4237,6 @@ export namespace IModelDb {
         insertAspect(aspectProps: ElementAspectProps): Id64String;
         // @deprecated
         insertElement(elProps: ElementProps, options?: InsertElementOptions): Id64String;
-        // @beta
-        moveElementTree(props: MoveElementTreeProps): void;
         // @internal
         _queryAspects(elementId: Id64String, fromClassFullName: string, excludedClassFullNames?: Set<string>): ElementAspect[];
         queryChildren(elementId: Id64String): Id64String[];
@@ -5366,19 +5381,6 @@ export class ModelSelectorRefersToModels extends Relationship {
     static get className(): string;
     // (undocumented)
     protected collectReferenceIds(referenceIds: EntityReferenceSet): void;
-}
-
-// @beta
-export interface MoveElementProps {
-    code?: CodeProps;
-    id: Id64String;
-    targetElementId?: Id64String;
-    targetModelId?: Id64String;
-}
-
-// @beta
-export interface MoveElementTreeProps extends MoveElementProps {
-    onMoveChild?: (childProps: ElementProps) => CodeProps | undefined;
 }
 
 // @public

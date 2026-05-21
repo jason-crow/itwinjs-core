@@ -12,7 +12,7 @@ import { EcefLocation, EcefLocationProps, EditTxnError, ElementAspectProps, Elem
 import { Range3d, Range3dProps } from "@itwin/core-geometry";
 import type { CloudSqlite } from "./CloudSqlite";
 import type { ImplicitWriteEnforcement } from "./IModelHost";
-import type { IModelDb, InsertElementOptions, MoveElementProps, UpdateModelOptions } from "./IModelDb";
+import type { ChangeElementModelProps, ChangeElementParentProps, IModelDb, InsertElementOptions, UpdateModelOptions } from "./IModelDb";
 import type { SettingsContainer } from "./workspace/Settings";
 import { _activeTxn, _cache, _instanceKeyCache, _nativeDb, _verifyChannel } from "./internal/Symbols";
 
@@ -273,90 +273,134 @@ export class EditTxn {
     });
   }
 
-  /** Move an element to a different model and/or parent.
-   * The element must be a leaf element (no children). If the element has children, this method will throw.
-   * At least one of `targetModelId` or `targetElementId` must be specified in props.
-   * The source and target models must be of the same class (classFullName must match exactly).
+  /** Change the parent of an element. If the new parent is in a different model, the element's model changes as well.
+   *
+   * **Blocked cases** (will throw with `InvalidCode`):
+   * - Element has a `ParentElement`-scoped code (code uniqueness is tied to parent; use delete+insert instead).
+   * - Element has a `Model`-scoped code and the model is changing (code is tied to source model; use delete+insert instead).
+   *
+   * **Allowed cases**:
+   * - Element has a `Repository`-scoped code (unique across entire iModel — unaffected by parent/model change).
+   * - Element has a `RelatedElement`-scoped code (scope element is independent of parent).
+   * - Element has no meaningful code (empty code).
+   *
+   * The element must be a leaf element (no children). If the element has children, use [[IModelDb.Elements.changeElementParent]] instead.
    * Channel verification is performed on both the source and target models.
-   * Lock enforcement: requires exclusive lock on the element being moved, and shared locks on the target parent (if any) and the target model.
-   * If a new code is provided and a CodeService is configured, the code is verified before the move.
-   * @param props The move parameters: element id, target model/parent, and optional new code.
+   * Lock enforcement: requires exclusive lock on the element, and shared lock on the new parent.
+   * @param props The reparent parameters: element id and new parent id.
    * @throws EditTxnError if this EditTxn is not active.
-   * @throws [[ITwinError]] if the move fails (e.g., element has children, model type mismatch, duplicate code, or code verification failure).
+   * @throws [[ITwinError]] if the operation fails.
    * @beta
    */
-  public moveElement(props: MoveElementProps): void {
+  public changeElementParent(props: ChangeElementParentProps): void {
     this.verifyWriteable();
     const iModel = this.iModel;
 
-    if (!props.targetModelId && !props.targetElementId)
-      ITwinError.throwError({ message: "moveElement requires at least one of targetModelId or targetElementId", iTwinErrorId: { scope: "imodel", key: "invalid-arguments" } });
+    // Lock enforcement: exclusive lock on element being reparented
+    iModel.locks.checkExclusiveLock(props.id, "element", "changeParent");
 
-    // Lock enforcement: exclusive lock on element being moved
-    iModel.locks.checkExclusiveLock(props.id, "element", "move");
+    // Shared lock on new parent
+    iModel.locks.checkSharedLock(props.parentId, "parent", "changeParent");
 
-    // Resolve the source model (the model the element currently belongs to)
+    // Resolve the source model
     const sourceModelId = iModel.elements.getElementProps({ id: props.id }).model;
 
     // Channel verification on the source model
     iModel.channels[_verifyChannel](sourceModelId);
 
-    // Resolve the target model for lock/channel checks.
-    // If targetElementId is a modeled element (partition), the element moves into its sub-model.
+    // Resolve the target model from the parent element
     let targetModelId: Id64String;
-    if (props.targetModelId) {
-      targetModelId = props.targetModelId;
-    } else if (iModel.models.tryGetModelProps(props.targetElementId!)) {
-      targetModelId = props.targetElementId!;
+    if (iModel.models.tryGetModelProps(props.parentId)) {
+      targetModelId = props.parentId;
     } else {
-      targetModelId = iModel.elements.getElementProps({ id: props.targetElementId! }).model;
+      targetModelId = iModel.elements.getElementProps({ id: props.parentId }).model;
     }
 
-    // Model type check: source and target models must be the same class
-    const sourceModel = iModel.models.getModel(sourceModelId);
-    const targetModel = iModel.models.getModel(targetModelId);
-    if (sourceModel.classFullName !== targetModel.classFullName)
-      ITwinError.throwError({ message: `cannot move element from model of type '${sourceModel.classFullName}' to model of type '${targetModel.classFullName}'`, iTwinErrorId: { scope: "imodel", key: "invalid-arguments" } });
+    // Model type check if model is changing
+    if (sourceModelId !== targetModelId) {
+      const sourceModel = iModel.models.getModel(sourceModelId);
+      const targetModel = iModel.models.getModel(targetModelId);
+      if (sourceModel.classFullName !== targetModel.classFullName)
+        ITwinError.throwError({ message: `cannot move element from model of type '${sourceModel.classFullName}' to model of type '${targetModel.classFullName}'`, iTwinErrorId: { scope: "imodel", key: "invalid-arguments" } });
 
-    // Shared lock on target element (new parent) if specified
-    if (props.targetElementId)
-      iModel.locks.checkSharedLock(props.targetElementId, "parent", "move");
+      // Shared lock on target model
+      iModel.locks.checkSharedLock(targetModelId, "model", "changeParent");
 
-    // Shared lock on target model
-    iModel.locks.checkSharedLock(targetModelId, "model", "move");
-
-    // Channel verification on the target model
-    iModel.channels[_verifyChannel](targetModelId);
-
-    // Verify code with CodeService if a new code is provided
-    if (props.code) {
-      const elProps = iModel.elements.getElementProps({ id: props.id });
-      iModel.codeService?.verifyCode({ iModel, props: { code: props.code, federationGuid: elProps.federationGuid } });
+      // Channel verification on the target model
+      iModel.channels[_verifyChannel](targetModelId);
     }
 
-    this._moveElementInternal(iModel, props, false);
-  }
-
-  /** @internal Move a single element with allowChildren support. */
-  private _moveElementInternal(iModel: IModelDb, props: MoveElementProps, allowChildren: boolean): void {
     // Invalidate caches
     iModel.elements[_cache].delete({ id: props.id });
     iModel.elements[_instanceKeyCache].deleteById(props.id);
 
-    // Build native props
-    const nativeProps = {
-      id: props.id,
-      targetModelId: props.targetModelId,
-      targetElementId: props.targetElementId,
-      code: props.code,
-      allowChildren,
-    };
+    try {
+      iModel[_nativeDb].changeElementParent({ id: props.id, parentId: props.parentId });
+    } catch (err: any) {
+      err.message = `Error changing element parent [${err.message}], id: ${props.id}, parentId: ${props.parentId}`;
+      err.metadata = { props };
+      throw err;
+    }
+
+    // Invalidate caches after mutation
+    iModel.elements[_cache].delete({ id: props.id });
+    iModel.elements[_instanceKeyCache].deleteById(props.id);
+  }
+
+  /** Change the model of an element, making it a root element (no parent) in the new model.
+   *
+   * **Blocked cases** (will throw with `InvalidCode`):
+   * - Element has a `Model`-scoped code (code uniqueness is tied to source model; use delete+insert instead).
+   * - Element has a `ParentElement`-scoped code (parent is cleared, invalidating the code scope; use delete+insert instead).
+   *
+   * **Allowed cases**:
+   * - Element has a `Repository`-scoped code (unique across entire iModel — unaffected by model change).
+   * - Element has a `RelatedElement`-scoped code (scope element is independent of model).
+   * - Element has no meaningful code (empty code).
+   *
+   * The element must be a leaf element (no children). If the element has children, use [[IModelDb.Elements.changeElementModel]] instead.
+   * The source and target models must be of the same class (classFullName must match exactly).
+   * Channel verification is performed on both the source and target models.
+   * Lock enforcement: requires exclusive lock on the element, and shared lock on the target model.
+   * @param props The model change parameters: element id and target model id.
+   * @throws EditTxnError if this EditTxn is not active.
+   * @throws [[ITwinError]] if the operation fails.
+   * @beta
+   */
+  public changeElementModel(props: ChangeElementModelProps): void {
+    this.verifyWriteable();
+    const iModel = this.iModel;
+
+    // Lock enforcement: exclusive lock on element
+    iModel.locks.checkExclusiveLock(props.id, "element", "changeModel");
+
+    // Resolve the source model
+    const sourceModelId = iModel.elements.getElementProps({ id: props.id }).model;
+
+    // Channel verification on the source model
+    iModel.channels[_verifyChannel](sourceModelId);
+
+    // Model type check: source and target models must be the same class
+    const sourceModel = iModel.models.getModel(sourceModelId);
+    const targetModel = iModel.models.getModel(props.modelId);
+    if (sourceModel.classFullName !== targetModel.classFullName)
+      ITwinError.throwError({ message: `cannot move element from model of type '${sourceModel.classFullName}' to model of type '${targetModel.classFullName}'`, iTwinErrorId: { scope: "imodel", key: "invalid-arguments" } });
+
+    // Shared lock on target model
+    iModel.locks.checkSharedLock(props.modelId, "model", "changeModel");
+
+    // Channel verification on the target model
+    iModel.channels[_verifyChannel](props.modelId);
+
+    // Invalidate caches
+    iModel.elements[_cache].delete({ id: props.id });
+    iModel.elements[_instanceKeyCache].deleteById(props.id);
 
     try {
-      iModel[_nativeDb].moveElement(nativeProps);
+      iModel[_nativeDb].changeElementModel({ id: props.id, modelId: props.modelId });
     } catch (err: any) {
-      err.message = `Error moving element [${err.message}], id: ${props.id}`;
-      err.metadata = { moveProps: props };
+      err.message = `Error changing element model [${err.message}], id: ${props.id}, modelId: ${props.modelId}`;
+      err.metadata = { props };
       throw err;
     }
 

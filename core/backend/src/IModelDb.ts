@@ -142,40 +142,48 @@ export interface InsertElementOptions {
   forceUseId?: boolean;
 }
 
-/** Options for [[EditTxn.moveElement]].
- * At least one of `targetModelId` or `targetElementId` must be specified.
+/** Options for [[EditTxn.changeElementParent]].
+ * Changes the parent of an element. If the new parent is in a different model, the element's model changes as well.
+ *
+ * **Blocked cases** (will throw with `InvalidCode`):
+ * - Element has a `ParentElement`-scoped code (code uniqueness is tied to parent; use delete+insert instead).
+ * - Element has a `Model`-scoped code and the model is changing (code is tied to source model; use delete+insert instead).
+ *
+ * **Allowed cases**:
+ * - Element has a `Repository`-scoped code (unique across entire iModel — unaffected by parent/model change).
+ * - Element has a `RelatedElement`-scoped code (scope element is independent of parent).
+ * - Element has no meaningful code (empty code).
+ *
  * @beta
  */
-export interface MoveElementProps {
-  /** The Id of the element to move. */
+export interface ChangeElementParentProps {
+  /** The Id of the element to reparent. */
   id: Id64String;
-  /** The Id of the target model. The moved element will become a root element (no parent) in this model.
-   * If `targetElementId` is also specified, the element becomes a child of that element in this model.
+  /** The Id of the new parent element.
+   * If this element is a modeled element (partition), the element becomes a root element in that element's sub-model.
    */
-  targetModelId?: Id64String;
-  /** The Id of the target parent element. The moved element will become a child of this element.
-   * If `targetModelId` is not specified, the model is deduced from this element.
-   * If this element is a modeled element (partition), the moved element becomes a root element in that element's sub-model.
-   */
-  targetElementId?: Id64String;
-  /** Optional new Code for the element. Required when the element's CodeScope is model-based and the model is changing. */
-  code?: CodeProps;
+  parentId: Id64String;
 }
 
-/** Options for [[IModelDb.Elements.moveElementTree]].
- * Moves an element and its entire subtree to a new model/parent.
- * @note The caller should hold exclusive locks on all elements in the subtree, not just the root.
+/** Options for [[EditTxn.changeElementModel]].
+ * Changes the model of an element, making it a root element (no parent) in the new model.
+ *
+ * **Blocked cases** (will throw with `InvalidCode`):
+ * - Element has a `Model`-scoped code (code uniqueness is tied to source model; use delete+insert instead).
+ * - Element has a `ParentElement`-scoped code (parent is cleared, invalidating the code scope; use delete+insert instead).
+ *
+ * **Allowed cases**:
+ * - Element has a `Repository`-scoped code (unique across entire iModel — unaffected by model change).
+ * - Element has a `RelatedElement`-scoped code (scope element is independent of model).
+ * - Element has no meaningful code (empty code).
+ *
  * @beta
  */
-export interface MoveElementTreeProps extends MoveElementProps {
-  /** Optional callback invoked for each descendant element being moved.
-   * Return a CodeProps to override the element's code in the new model, or undefined to keep the existing code.
-   * This is required for descendant elements that have model-scoped codes when the model is changing.
-   * This callback is NOT invoked for the root element — use [[MoveElementProps.code]] to set the root's code.
-   * @param childProps The full properties of the child element about to be moved.
-   * @returns A new CodeProps for the child, or undefined to keep its current code.
-   */
-  onMoveChild?: (childProps: ElementProps) => CodeProps | undefined;
+export interface ChangeElementModelProps {
+  /** The Id of the element to move. */
+  id: Id64String;
+  /** The Id of the target model. The element becomes a root element (no parent) in this model. */
+  modelId: Id64String;
 }
 
 /** Options supplied to [[IModelDb.clearCaches]].
@@ -2949,70 +2957,66 @@ export namespace IModelDb {
       return this._iModel[_implicitTxn].deleteDefinitionElements(definitionElementIds);
     }
 
-    /** Move an element and its entire subtree to a different model and/or parent.
-     * This is the only supported entry point for moving element trees. The operation is atomic:
-     * either the entire subtree moves successfully and changes are committed, or all changes are
-     * abandoned — elements will never be left split across models.
+    /** Change the parent of an element and its entire descendant subtree (assembly-safe).
+     * The subtree is moved bottom-up so that each element is a leaf when reparented, then
+     * parent-child relationships are re-established top-down.
      *
-     * At least one of `targetModelId` or `targetElementId` must be specified in props.
-     * The source and target models must be of the same class (classFullName must match exactly).
-     * The subtree is moved in two passes: (1) all descendants are moved bottom-up as root elements
-     * in the target model, (2) parent-child relationships are re-established top-down.
+     * If the new parent is in a different model, all elements in the subtree move to that model as well.
+     *
+     * **Blocked cases** (will throw with `InvalidCode`):
+     * - Any element in the subtree has a `ParentElement`-scoped code (scope is invalidated by reparenting).
+     * - Any element in the subtree has a `Model`-scoped code and the model is changing.
+     *
+     * **Allowed cases**:
+     * - Elements have `Repository`-scoped or `RelatedElement`-scoped codes.
+     * - Elements have no meaningful codes (empty codes).
      *
      * Channel verification is performed on both the source and target models.
-     * Lock enforcement: requires exclusive lock on the root element being moved, and shared locks on
-     * the target parent (if any) and the target model.
-     * If new codes are provided (via `props.code` or the `onMoveChild` callback) and a CodeService is configured,
-     * codes are verified before each element is moved.
+     * Lock enforcement: requires exclusive lock on the root element, shared lock on the new parent.
      * @note Callers should ensure exclusive locks are held on all descendant elements before calling this method.
-     * @param props The move parameters including optional callback for child code resolution.
-     * @throws [[ITwinError]] if the move fails (e.g., model type mismatch, duplicate code, code verification failure, or unsaved changes exist).
+     * @param props The reparent parameters: element id and new parent id.
+     * @throws [[ITwinError]] if the operation fails (e.g., model type mismatch, code scope conflict).
      * @beta
      */
-    public moveElementTree(props: MoveElementTreeProps): void {
-      withEditTxn(this._iModel, "moveElementTree", (txn) => {
+    public changeElementParent(props: ChangeElementParentProps): void {
+      withEditTxn(this._iModel, "changeElementParent", (txn) => {
         const iModel = this._iModel;
 
-        if (!props.targetModelId && !props.targetElementId)
-          ITwinError.throwError({ message: "moveElementTree requires at least one of targetModelId or targetElementId", iTwinErrorId: { scope: "imodel", key: "invalid-arguments" } });
-
         // Lock enforcement: exclusive lock on root element
-        iModel.locks.checkExclusiveLock(props.id, "element", "move");
+        iModel.locks.checkExclusiveLock(props.id, "element", "changeParent");
 
-        // Resolve the source model (the model the element currently belongs to)
+        // Shared lock on new parent
+        iModel.locks.checkSharedLock(props.parentId, "parent", "changeParent");
+
+        // Resolve the source model
         const sourceModelId = iModel.elements.getElementProps({ id: props.id }).model;
 
         // Channel verification on the source model
         iModel.channels[_verifyChannel](sourceModelId);
 
-        // Resolve the target model for lock/channel checks.
-        // If targetElementId is a modeled element (partition), the element moves into its sub-model.
+        // Resolve the target model from the parent element
         let targetModelId: Id64String;
-        if (props.targetModelId) {
-          targetModelId = props.targetModelId;
-        } else if (iModel.models.tryGetModelProps(props.targetElementId!)) {
-          targetModelId = props.targetElementId!;
+        if (iModel.models.tryGetModelProps(props.parentId)) {
+          targetModelId = props.parentId;
         } else {
-          targetModelId = iModel.elements.getElementProps({ id: props.targetElementId! }).model;
+          targetModelId = iModel.elements.getElementProps({ id: props.parentId }).model;
         }
 
-        // Model type check: source and target models must be the same class
-        const sourceModel = iModel.models.getModel(sourceModelId);
-        const targetModel = iModel.models.getModel(targetModelId);
-        if (sourceModel.classFullName !== targetModel.classFullName)
-          ITwinError.throwError({ message: `cannot move element from model of type '${sourceModel.classFullName}' to model of type '${targetModel.classFullName}'`, iTwinErrorId: { scope: "imodel", key: "invalid-arguments" } });
+        // Model type check if model is changing
+        if (sourceModelId !== targetModelId) {
+          const sourceModel = iModel.models.getModel(sourceModelId);
+          const targetModel = iModel.models.getModel(targetModelId);
+          if (sourceModel.classFullName !== targetModel.classFullName)
+            ITwinError.throwError({ message: `cannot move element from model of type '${sourceModel.classFullName}' to model of type '${targetModel.classFullName}'`, iTwinErrorId: { scope: "imodel", key: "invalid-arguments" } });
 
-        // Shared lock on target element (new parent) if specified
-        if (props.targetElementId)
-          iModel.locks.checkSharedLock(props.targetElementId, "parent", "move");
+          // Shared lock on target model
+          iModel.locks.checkSharedLock(targetModelId, "model", "changeParent");
 
-        // Shared lock on target model
-        iModel.locks.checkSharedLock(targetModelId, "model", "move");
+          // Channel verification on the target model
+          iModel.channels[_verifyChannel](targetModelId);
+        }
 
-        // Channel verification on the target model
-        iModel.channels[_verifyChannel](targetModelId);
-
-        // Collect full subtree in DFS post-order (leaves first) so each element is a leaf when moved.
+        // Collect full subtree in DFS post-order (leaves first)
         const subtreePostOrder: Array<{ id: Id64String; parentId: Id64String | undefined }> = [];
         const collectPostOrder = (parentId: Id64String) => {
           for (const childId of iModel.elements.queryChildren(parentId)) {
@@ -3022,39 +3026,94 @@ export namespace IModelDb {
         };
         collectPostOrder(props.id);
 
-        // Pass 1: Move all descendants bottom-up (post-order) to the new model as root elements.
-        for (const entry of subtreePostOrder) {
-          const childProps = iModel.elements.getElementProps({ id: entry.id });
-          const newCode = props.onMoveChild?.(childProps);
-          txn.moveElement({ id: entry.id, targetModelId, code: newCode });
+        // Pass 1: Move all descendants bottom-up to target model as root elements
+        if (sourceModelId !== targetModelId) {
+          for (const entry of subtreePostOrder) {
+            txn.changeElementModel({ id: entry.id, modelId: targetModelId });
+          }
         }
 
-        // Move the root element last (it now has no children since all were moved in pass 1)
-        txn.moveElement(props);
+        // Move the root element via reparent (handles model change implicitly)
+        txn.changeElementParent({ id: props.id, parentId: props.parentId });
 
-        // Pass 2: Re-establish parent relationships within the new model (top-down order).
+        // Pass 2: Re-establish parent relationships within the new model (top-down)
         for (let i = subtreePostOrder.length - 1; i >= 0; i--) {
           const entry = subtreePostOrder[i];
           if (entry.parentId) {
-            iModel.elements[_cache].delete({ id: entry.id });
-            iModel.elements[_instanceKeyCache].deleteById(entry.id);
+            txn.changeElementParent({ id: entry.id, parentId: entry.parentId });
+          }
+        }
+      });
+    }
 
-            const nativeProps = {
-              id: entry.id,
-              targetModelId,
-              targetElementId: entry.parentId,
-            };
+    /** Change the model of an element and its entire descendant subtree (assembly-safe).
+     * The element becomes a root element (no parent) in the target model. All descendants
+     * are moved to the target model as well, preserving their internal parent-child relationships.
+     *
+     * **Blocked cases** (will throw with `InvalidCode`):
+     * - Any element in the subtree has a `Model`-scoped code (code uniqueness is tied to source model).
+     * - Any element in the subtree has a `ParentElement`-scoped code (parent is cleared for root, invalidating scope).
+     *
+     * **Allowed cases**:
+     * - Elements have `Repository`-scoped or `RelatedElement`-scoped codes.
+     * - Elements have no meaningful codes (empty codes).
+     *
+     * The source and target models must be of the same class (classFullName must match exactly).
+     * Channel verification is performed on both the source and target models.
+     * Lock enforcement: requires exclusive lock on the root element, shared lock on the target model.
+     * @note Callers should ensure exclusive locks are held on all descendant elements before calling this method.
+     * @param props The model change parameters: element id and target model id.
+     * @throws [[ITwinError]] if the operation fails (e.g., model type mismatch, code scope conflict).
+     * @beta
+     */
+    public changeElementModel(props: ChangeElementModelProps): void {
+      withEditTxn(this._iModel, "changeElementModel", (txn) => {
+        const iModel = this._iModel;
 
-            try {
-              iModel[_nativeDb].moveElement(nativeProps);
-            } catch (err: any) {
-              err.message = `Error re-parenting element [${err.message}], id: ${entry.id}, parent: ${entry.parentId}`;
-              err.metadata = { moveProps: props, childId: entry.id };
-              throw err;
-            }
+        // Lock enforcement: exclusive lock on root element
+        iModel.locks.checkExclusiveLock(props.id, "element", "changeModel");
 
-            iModel.elements[_cache].delete({ id: entry.id });
-            iModel.elements[_instanceKeyCache].deleteById(entry.id);
+        // Resolve the source model
+        const sourceModelId = iModel.elements.getElementProps({ id: props.id }).model;
+
+        // Channel verification on the source model
+        iModel.channels[_verifyChannel](sourceModelId);
+
+        // Model type check: source and target models must be the same class
+        const sourceModel = iModel.models.getModel(sourceModelId);
+        const targetModel = iModel.models.getModel(props.modelId);
+        if (sourceModel.classFullName !== targetModel.classFullName)
+          ITwinError.throwError({ message: `cannot move element from model of type '${sourceModel.classFullName}' to model of type '${targetModel.classFullName}'`, iTwinErrorId: { scope: "imodel", key: "invalid-arguments" } });
+
+        // Shared lock on target model
+        iModel.locks.checkSharedLock(props.modelId, "model", "changeModel");
+
+        // Channel verification on the target model
+        iModel.channels[_verifyChannel](props.modelId);
+
+        // Collect full subtree in DFS post-order (leaves first)
+        const subtreePostOrder: Array<{ id: Id64String; parentId: Id64String | undefined }> = [];
+        const collectPostOrder = (parentId: Id64String) => {
+          for (const childId of iModel.elements.queryChildren(parentId)) {
+            collectPostOrder(childId);
+            subtreePostOrder.push({ id: childId, parentId });
+          }
+        };
+        collectPostOrder(props.id);
+
+        // Pass 1: Move all descendants bottom-up to target model as root elements
+        for (const entry of subtreePostOrder) {
+          txn.changeElementModel({ id: entry.id, modelId: props.modelId });
+        }
+
+        // Move the root element last
+        txn.changeElementModel({ id: props.id, modelId: props.modelId });
+
+        // Pass 2: Re-establish parent relationships within the new model (top-down)
+        for (let i = subtreePostOrder.length - 1; i >= 0; i--) {
+          const entry = subtreePostOrder[i];
+          if (entry.parentId) {
+            txn.changeElementParent({ id: entry.id, parentId: entry.parentId });
           }
         }
       });
