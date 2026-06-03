@@ -1,0 +1,11 @@
+{
+  "changes": [
+    {
+      "comment": "Merge master into affank/move-el",
+      "type": "none",
+      "packageName": "@itwin/analytical-backend"
+    }
+  ],
+  "packageName": "@itwin/analytical-backend",
+  "email": "198982749+Copilot@users.noreply.github.com"
+}

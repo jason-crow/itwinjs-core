@@ -1,0 +1,11 @@
+{
+  "changes": [
+    {
+      "comment": "Merge master into affank/move-el",
+      "type": "none",
+      "packageName": "@itwin/ecschema-metadata"
+    }
+  ],
+  "packageName": "@itwin/ecschema-metadata",
+  "email": "198982749+Copilot@users.noreply.github.com"
+}
