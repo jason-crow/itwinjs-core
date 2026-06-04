@@ -4227,9 +4227,9 @@ export namespace IModelDb {
         readonly [_instanceKeyCache]: InstanceKeyLRUCache;
         // @internal
         constructor(_iModel: IModelDb);
-        // @beta
+        // @beta @deprecated
         changeElementModel(props: ChangeElementModelProps): void;
-        // @beta
+        // @beta @deprecated
         changeElementParent(props: ChangeElementParentProps): void;
         createElement<T extends Element_2>(elProps: ElementProps): T;
         // @deprecated

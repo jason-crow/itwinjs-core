@@ -3249,6 +3249,26 @@ export namespace IModelDb {
     public deleteAspect(aspectInstanceIds: Id64Arg): void {
       this._iModel[_implicitTxn].deleteAspect(aspectInstanceIds);
     }
+
+    /** Change the parent of an element.
+     * @param props The properties specifying the element to reparent and its new parent.
+     * @throws [[IModelError]] if unable to change the element's parent.
+     * @beta
+     * @deprecated in 5.9.0 - will not be removed until after 2026-08-04. Use EditTxn.changeElementParent instead, within an explicit EditTxn scope (or via withEditTxn). See EditTxn documentation for migration help.
+     */
+    public changeElementParent(props: ChangeElementParentProps): void {
+      this._iModel[_implicitTxn].changeElementParent(props);
+    }
+
+    /** Change the model of an element.
+     * @param props The properties specifying the element to move and its new model.
+     * @throws [[IModelError]] if unable to change the element's model.
+     * @beta
+     * @deprecated in 5.9.0 - will not be removed until after 2026-08-04. Use EditTxn.changeElementModel instead, within an explicit EditTxn scope (or via withEditTxn). See EditTxn documentation for migration help.
+     */
+    public changeElementModel(props: ChangeElementModelProps): void {
+      this._iModel[_implicitTxn].changeElementModel(props);
+    }
   }
 
   /** The collection of views in an [[IModelDb]].
