@@ -16,31 +16,19 @@ publish: false
 
 ### Move elements between models and parents
 
-New `@beta` methods allow moving existing elements to a different model and/or parent without deleting and re-inserting them:
+New `@beta` methods on [EditTxn]($backend) allow moving existing leaf elements (no children) to a different parent or model without deleting and re-inserting them:
 
-- **`EditTxn.changeElementParent`** — changes the parent of a single leaf element (no children). If the new parent is in a different model, the element's model changes as well.
-- **`EditTxn.changeElementModel`** — changes the model of a single leaf element, making it a root element (no parent) in the new model.
-- **`IModelDb.Elements.changeElementParent`** — recursively reparents an element and its entire descendant subtree (assembly-safe). Wrapped in a transaction for atomicity.
-- **`IModelDb.Elements.changeElementModel`** — recursively moves an element and its entire descendant subtree to a new model (assembly-safe). Wrapped in a transaction for atomicity.
-
-The `EditTxn` methods operate on leaf elements only. For assemblies (elements with children), use the `IModelDb.Elements` methods which handle the subtree recursively.
-
-`EditTxn.changeElementParent` accepts [ChangeElementParentProps]($backend) (element id and new parent id). `EditTxn.changeElementModel` accepts [ChangeElementModelProps]($backend) (element id and target model id). The `IModelDb.Elements` methods accept the same props but handle the entire subtree atomically.
+- **`EditTxn.changeElementParent`** — changes the parent of a single leaf element. If the new parent is in a different model, the element's model changes as well. Accepts [ChangeElementParentProps]($backend) (element id and new parent id).
+- **`EditTxn.changeElementModel`** — changes the model of a single leaf element, making it a root element (no parent) in the new model. Accepts [ChangeElementModelProps]($backend) (element id and target model id).
 
 **Blocked code scopes**: Elements with `Model`-scoped or `ParentElement`-scoped codes cannot be moved — the operation will throw with `InvalidCode`. Elements with `Repository`-scoped, `RelatedElement`-scoped, or empty codes are allowed.
 
 ```typescript
-// Change a leaf element's parent (stays in same model if parent is in same model)
+// Change a leaf element's parent (also moves to new model if parent is in a different model)
 editTxn.changeElementParent({ id: elementId, parentId: newParentId });
 
 // Move a leaf element to a different model as a root element (clears parent)
 editTxn.changeElementModel({ id: elementId, modelId: newModelId });
-
-// Reparent an assembly (element with children) — subtree follows
-iModelDb.elements.changeElementParent({ id: assemblyId, parentId: newParentId });
-
-// Move an assembly to a different model — subtree follows
-iModelDb.elements.changeElementModel({ id: assemblyId, modelId: newModelId });
 ```
 
 ### ECSQL CROSS JOIN now supports optional ON clause

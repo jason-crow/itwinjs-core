@@ -284,7 +284,7 @@ export class EditTxn {
    * - Element has a `RelatedElement`-scoped code (scope element is independent of parent).
    * - Element has no meaningful code (empty code).
    *
-   * The element must be a leaf element (no children). If the element has children, use [[IModelDb.Elements.changeElementParent]] instead.
+   * The element must be a leaf element (no children).
    * Channel verification is performed on both the source and target models.
    * Lock enforcement: requires exclusive lock on the element, and shared lock on the new parent.
    * @param props The reparent parameters: element id and new parent id.
@@ -358,7 +358,7 @@ export class EditTxn {
    * - Element has a `RelatedElement`-scoped code (scope element is independent of model).
    * - Element has no meaningful code (empty code).
    *
-   * The element must be a leaf element (no children). If the element has children, use [[IModelDb.Elements.changeElementModel]] instead.
+   * The element must be a leaf element (no children).
    * The source and target models must be of the same class (classFullName must match exactly).
    * Channel verification is performed on both the source and target models.
    * Lock enforcement: requires exclusive lock on the element, and shared lock on the target model.
